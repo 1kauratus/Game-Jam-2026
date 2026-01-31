@@ -8,6 +8,7 @@ pip install "numpy<2" opencv-python mediapipe pygame sounddevice
 
 ---
 ## exact thing to run if you are using window:
+```
 # ---- Game Jam 2026: quick run (Windows PowerShell) ----
 
 # Prefer Python 3.11 (best compatibility with mediapipe==0.10.21)
@@ -38,4 +39,4 @@ python -c "import mediapipe as mp; assert mp.__version__=='0.10.21' and hasattr(
 
 # Run game (DirectShow backend for Windows)
 python .\webcam-main.py --backend dshow --cam 0
-
+```
