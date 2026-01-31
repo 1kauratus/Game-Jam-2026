@@ -5,7 +5,7 @@
 # - Calibration screen (both hands steady + face visible)
 # - Hand lift controls lane switching (left/right)
 # - BOTH hands lift -> SLIDE (under pipes)
-# - Head tilt UP -> JUMP (over walls)          [MODIFIED]
+# - Head tilt UP -> "JUMP" (WALL collision immunity + visual jump)  [UPDATED]
 # - Head tilt DOWN -> CROUCH (hold to crouch)  [MODIFIED]
 # - Voice loudness -> speed gain
 #
@@ -48,10 +48,11 @@ PLAYER_H_SLIDE = 55
 OB_W = 70
 WALL_H = 95
 PIPE_H = 42
+PIPE_Y = int(GROUND_Y - PLAYER_H_RUN + 20)  # overhead pipe height
 
 SPAWN_INTERVAL = 1.25     # seconds (lower = harder)
-SPEED_START = 260         # pixels/sec
-SPEED_GROWTH = 6          # increase over time
+SPEED_START = 220         # pixels/sec
+SPEED_GROWTH = 4          # increase over time
 
 # Hand control tuning
 DEADZONE = 0.03
@@ -59,7 +60,7 @@ LIFT_TRIGGER = 0.06       # lift threshold to trigger lane change / slide
 COOLDOWN = 0.35           # seconds between lane changes
 SMOOTHING = 0.80          # smooth lift values
 
-# Jump tuning
+# Jump tuning (kept, but WALL avoidance is now gesture-based immunity)
 GRAVITY = 2200.0          # px/s^2
 JUMP_VEL = -820.0         # px/s
 JUMP_COOLDOWN = 0.35
@@ -74,13 +75,22 @@ SLIDE_COOLDOWN = 0.40
 # In image coords: y DECREASES when your nose goes UP, y INCREASES when your nose goes DOWN.
 HEAD_SMOOTHING = 0.85
 
-# Jump when nose goes UP by this amount
-LOOK_UP_TRIGGER = 0.025
-LOOK_UP_REARM = 0.010
+# Jump when nose goes UP by this amount (kept)
+LOOK_UP_TRIGGER = 0.035
+LOOK_UP_REARM = 0.030
 
 # Crouch when nose goes DOWN by this amount (hold crouch)
 LOOK_DOWN_TRIGGER = 0.020
 LOOK_DOWN_RELEASE = 0.010
+
+# -----------------------------
+# WALL "JUMP" IMMUNITY LOGIC [NEW]
+# -----------------------------
+# While head is UP enough, WALL collisions are ignored (visual jump shown).
+# Hysteresis prevents flicker.
+WALL_IMMUNE_ON = 0.030
+WALL_IMMUNE_OFF = 0.020
+VISUAL_JUMP_OFFSET_PX = 40  # how high the player looks like it jumps
 
 # Calibration (hands + face)
 CALIBRATION_BUFFER_SEC = 1.2
@@ -270,10 +280,12 @@ class Obstacle:
         self.update_rect()
 
     def update_rect(self):
-        if self.kind == "PIPE":
-            self.rect.center = (self.x, int(self.y) - 18)
+        if self.kind == "WALL":
+            # Wall stands on the ground
+            self.rect.midbottom = (self.x, int(self.y))
         else:
-            self.rect.center = (self.x, int(self.y))
+            # Pipe hangs overhead
+            self.rect.midtop = (self.x, int(self.y))
 
     def update(self, dt, speed):
         self.y += speed * dt
@@ -355,13 +367,18 @@ class Player:
 
         self.update_rect()
 
-    def draw(self, screen):
+    def draw(self, screen, wall_immune=False):
+        # Visual "jump" while wall_immune is active (hitbox stays the same)
+        offset_y = -VISUAL_JUMP_OFFSET_PX if wall_immune else 0
+
         body = self.rect.copy()
+        body.y += offset_y
+
         pygame.draw.rect(screen, (80, 200, 255), body, border_radius=25)
         pygame.draw.rect(screen, (0, 0, 0), body, width=3, border_radius=25)
 
         head_r = 18
-        head_center = (self.rect.centerx, self.rect.top + 18)
+        head_center = (body.centerx, body.top + 18)
         pygame.draw.circle(screen, (255, 230, 200), head_center, head_r)
         pygame.draw.circle(screen, (0, 0, 0), head_center, head_r, 2)
 
@@ -443,6 +460,9 @@ def main():
     # Track whether crouch is being forced by head-down
     forced_crouch = False
 
+    # WALL immunity state (head up)
+    wall_immune = False
+
     # Game state
     player = Player()
     obstacles = []
@@ -489,6 +509,7 @@ def main():
             last_slide_time = 0.0
 
             forced_crouch = False
+            wall_immune = False
 
             player = Player()
             obstacles = []
@@ -568,6 +589,8 @@ def main():
 
         # -------------- CALIBRATION --------------
         if state == "CALIBRATING":
+            wall_immune = False  # ensure off during calibration
+
             if left_y is not None and right_y is not None and smooth_nose_y is not None:
                 left_hist.append((now, left_y))
                 right_hist.append((now, right_y))
@@ -601,12 +624,14 @@ def main():
                         confirm_start = now
 
         elif state == "CONFIRM":
+            wall_immune = False  # keep off until playing
             if (now - confirm_start) >= CONFIRM_HOLD:
                 state = "PLAYING"
                 start_time = time.time()
                 last_spawn = time.time()
                 score = 0.0
                 speed = SPEED_START
+                wall_immune = False
 
         # -------------- PLAYING --------------
         if state == "PLAYING":
@@ -679,13 +704,21 @@ def main():
                     last_switch_time = now
 
             # -----------------------------
-            # Head control: UP -> jump, DOWN -> hold crouch  [MODIFIED]
+            # Head control:
+            # - DOWN -> hold crouch (forces SLIDE)
+            # - UP -> WALL immunity ON (visual jump) [NEW]
             # -----------------------------
             if base_nose_y is not None and smooth_nose_y is not None:
                 nose_up = (base_nose_y - smooth_nose_y)      # positive when nose goes UP
                 nose_down = (smooth_nose_y - base_nose_y)    # positive when nose goes DOWN
 
-                # Jump on head UP (edge-triggered + cooldown)
+                # WALL immunity toggle based on head UP (hysteresis)
+                if nose_up >= WALL_IMMUNE_ON:
+                    wall_immune = True
+                elif nose_up <= WALL_IMMUNE_OFF:
+                    wall_immune = False
+
+                # Jump logic kept (optional / you can still use it), but not required for wall avoidance now
                 if nose_up <= LOOK_UP_REARM:
                     jump_armed = True
 
@@ -693,7 +726,7 @@ def main():
                     player.jump()
                     last_jump_time = now
                     jump_armed = False
-                    forced_crouch = False  # can't crouch while jumping
+                    forced_crouch = False
 
                 # Hold crouch while head DOWN (only when not jumping)
                 if player.state != "JUMP":
@@ -701,12 +734,10 @@ def main():
                         forced_crouch = True
 
                     if forced_crouch:
-                        # Force crouch immediately and keep it held by refreshing timer
                         player.state = "SLIDE"
                         player.slide_t = SLIDE_DURATION
                         player.update_rect()
 
-                        # Release crouch when head returns closer to baseline
                         if nose_down <= LOOK_DOWN_RELEASE:
                             forced_crouch = False
                             player.state = "RUN"
@@ -717,21 +748,28 @@ def main():
             if (now - last_spawn) >= SPAWN_INTERVAL:
                 lane = int(np.random.randint(0, LANES))
                 kind = "WALL" if np.random.rand() < 0.6 else "PIPE"
-                obstacles.append(Obstacle(lane, y=-120, kind=kind))
+                if kind == "WALL":
+                    spawn_y = -20  # uses midbottom
+                else:
+                    spawn_y = -PIPE_H - 20  # uses midtop
+
+                obstacles.append(Obstacle(lane, y=spawn_y, kind=kind))
                 last_spawn = now
 
             # Update obstacles
             for ob in obstacles:
                 ob.update(dt, speed)
 
-            obstacles = [ob for ob in obstacles if ob.y < WIN_H + 160]
+            obstacles = [ob for ob in obstacles if ob.y < WIN_H + 220]
 
             # Collision rules:
-            # - WALL: collide normally (jump to avoid)
+            # - WALL: ignored while wall_immune is True (head up)
             # - PIPE: if sliding, ignore collision; otherwise collide
             for ob in obstacles:
                 if player.rect.colliderect(ob.rect):
                     if ob.kind == "PIPE" and player.state == "SLIDE":
+                        continue
+                    if ob.kind == "WALL" and wall_immune:
                         continue
                     state = "GAMEOVER"
                     break
@@ -744,7 +782,7 @@ def main():
             pygame.draw.line(screen, (255, 255, 255), (x, 0), (x, WIN_H), 2)
         pygame.draw.line(screen, (255, 255, 255), (0, GROUND_Y), (WIN_W, GROUND_Y), 2)
 
-        player.draw(screen)
+        player.draw(screen, wall_immune if state == "PLAYING" else False)
         for ob in obstacles:
             ob.draw(screen)
 
@@ -767,22 +805,23 @@ def main():
         elif state == "CONFIRM":
             draw_text(screen, "Calibration complete!", 20, 18, 36, (0, 255, 0))
             draw_text(screen, "Left hand: left lane | Right hand: right lane", 20, 62, 26)
-            draw_text(screen, "Both hands: slide | Head UP: jump | Head DOWN: crouch", 20, 92, 26)
+            draw_text(screen, "Both hands: slide | Head UP: jump (walls) | Head DOWN: crouch", 20, 92, 26)
 
         elif state == "PLAYING":
             draw_text(screen, f"Time: {score:0.2f}s", 20, 18, 30)
             draw_text(screen, f"Speed: {int(speed)}", 20, 52, 24)
             draw_text(screen, f"State: {player.state}", 20, 80, 24)
-            draw_text(screen, "Walls=JUMP  Pipes=SLIDE", 20, WIN_H - 40, 22, (255, 255, 0))
+            draw_text(screen, f"WallImmune: {wall_immune}", 20, 104, 22, (255, 255, 0))
+            draw_text(screen, "Walls=HEAD UP  Pipes=SLIDE", 20, WIN_H - 40, 22, (255, 255, 0))
 
             if voice is not None:
-                draw_text(screen, f"Voice: {voice_level:.2f}  gain: {voice_gain:.2f}x", 20, 110, 20, (200, 255, 200))
+                draw_text(screen, f"Voice: {voice_level:.2f}  gain: {voice_gain:.2f}x", 20, 130, 20, (200, 255, 200))
 
             if SHOW_DEBUG and base_left_y is not None and base_right_y is not None and base_nose_y is not None:
-                draw_text(screen, f"liftL={smooth_left_lift:.3f} liftR={smooth_right_lift:.3f}", 20, 135, 20, (200, 255, 200))
+                draw_text(screen, f"liftL={smooth_left_lift:.3f} liftR={smooth_right_lift:.3f}", 20, 155, 20, (200, 255, 200))
                 if smooth_nose_y is not None:
                     draw_text(screen, f"noseUp={(base_nose_y-smooth_nose_y):.3f} noseDown={(smooth_nose_y-base_nose_y):.3f}",
-                              20, 158, 20, (200, 255, 200))
+                              20, 178, 20, (200, 255, 200))
 
         elif state == "GAMEOVER":
             draw_text(screen, "GAME OVER", WIN_W // 2 - 130, WIN_H // 2 - 60, 48, (255, 80, 80))
