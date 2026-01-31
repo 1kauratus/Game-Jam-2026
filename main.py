@@ -16,6 +16,8 @@ import numpy as np
 import pygame
 import mediapipe as mp
 from collections import deque
+import sounddevice as sd
+import threading
 
 # -----------------------------
 # CONFIG
@@ -51,6 +53,25 @@ CONFIRM_HOLD = 1.0
 SHOW_HAND_MESH = True
 SHOW_DEBUG = True
 
+# -----------------------------
+# VOICE SPEED CONTROL (NEW)
+# -----------------------------
+VOICE_ENABLED = True
+
+AUDIO_SR = 16000
+AUDIO_BLOCK = 1024
+
+# How loud the room is at rest (auto-calibrated)
+VOICE_CALIBRATE_SEC = 1.0
+
+# Mapping loudness -> speed
+VOICE_MIN_GAIN = 1.00   # speed multiplier when quiet
+VOICE_MAX_GAIN = 1.80   # speed multiplier when loud
+
+VOICE_SMOOTH = 0.90     # higher = smoother, slower response
+VOICE_ATTACK = 0.35     # how fast it reacts to getting louder (0..1)
+VOICE_RELEASE = 0.08    # how fast it falls when you stop talking (0..1)
+
 # MediaPipe
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
@@ -77,6 +98,74 @@ def draw_text(screen, text, x, y, size=26, color=(255, 255, 255)):
     font = pygame.font.SysFont("Arial", size, bold=True)
     img = font.render(text, True, color)
     screen.blit(img, (x, y))
+
+# -----------------------------
+# VOICE HELPER CLASS (NEW)
+# -----------------------------
+class VoiceMeter:
+    """
+    Measures mic loudness (RMS) in the background and outputs a smooth 0..1 voice level.
+    Auto-calibrates a noise floor for the first VOICE_CALIBRATE_SEC seconds.
+    """
+    def __init__(self, sr=AUDIO_SR, block=AUDIO_BLOCK):
+        self.sr = sr
+        self.block = block
+        self.lock = threading.Lock()
+
+        self.rms = 0.0
+        self.level = 0.0  # 0..1
+        self.noise_floor = None
+        self.calib_samples = []
+        self.calib_start = time.time()
+
+        self.stream = sd.InputStream(
+            samplerate=self.sr,
+            channels=1,
+            blocksize=self.block,
+            callback=self._callback
+        )
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            return
+        # indata shape: (frames, 1)
+        x = indata[:, 0].astype(np.float32)
+        rms = float(np.sqrt(np.mean(x * x) + 1e-12))
+
+        with self.lock:
+            self.rms = rms
+
+            # Calibrate noise floor
+            if self.noise_floor is None:
+                self.calib_samples.append(rms)
+                if (time.time() - self.calib_start) >= VOICE_CALIBRATE_SEC and len(self.calib_samples) > 10:
+                    # Use a robust baseline (median) + a small buffer
+                    base = float(np.median(self.calib_samples))
+                    self.noise_floor = base * 1.5  # buffer so breathing/keyboard doesn't trigger
+            else:
+                # Convert rms -> raw 0..1 level (clamped)
+                # Anything below noise_floor is treated as 0.
+                raw = (rms - self.noise_floor) / (self.noise_floor * 4.0)
+                raw = clamp(raw, 0.0, 1.0)
+
+                # Attack/Release smoothing (feels nicer than single smoothing factor)
+                if raw > self.level:
+                    a = VOICE_ATTACK
+                else:
+                    a = VOICE_RELEASE
+                self.level = (1 - a) * self.level + a * raw
+
+    def start(self):
+        self.stream.start()
+
+    def stop(self):
+        self.stream.stop()
+        self.stream.close()
+
+    def get_level(self):
+        with self.lock:
+            return float(self.level), float(self.rms), self.noise_floor
+
 
 # -----------------------------
 # Game objects
@@ -155,6 +244,16 @@ def main():
         min_detection_confidence=0.65,
         min_tracking_confidence=0.65
     )
+
+    voice = None
+    if VOICE_ENABLED:
+        try:
+            voice = VoiceMeter()
+            voice.start()
+        except Exception as e:
+            print("Voice input disabled (mic error):", e)
+            voice = None
+
 
     # Calibration state
     state = "CALIBRATING"  # CALIBRATING -> CONFIRM -> PLAYING -> GAMEOVER
@@ -288,7 +387,15 @@ def main():
         if state == "PLAYING":
             # Update difficulty
             score = now - start_time
-            speed = SPEED_START + SPEED_GROWTH * score
+            base_speed = SPEED_START + SPEED_GROWTH * score
+
+            voice_gain = 1.0
+            voice_level = 0.0
+            if voice is not None:
+                voice_level, rms, nf = voice.get_level()
+                voice_gain = VOICE_MIN_GAIN +(VOICE_MAX_GAIN - VOICE_MIN_GAIN) * voice_level
+            
+            speed = base_speed * voice_gain
 
             # Compute lifts
             left_lift = 0.0
@@ -383,6 +490,9 @@ def main():
                 draw_text(screen, f"baseL={base_left_y:.3f} baseR={base_right_y:.3f}", 20, 84, 20, (200, 255, 200))
                 draw_text(screen, f"liftL={smooth_left_lift:.3f} liftR={smooth_right_lift:.3f}", 20, 110, 20, (200, 255, 200))
                 draw_text(screen, f"Lane: {player.lane+1}/{LANES}", 20, 136, 20, (200, 255, 200))
+            
+            if voice is not None:
+                draw_text(screen, f"Voice: {voice_level:.2f}  gain: {voice_gain:.2f}x", 20, 160, 20, (200, 255, 200))
 
         elif state == "GAMEOVER":
             draw_text(screen, "GAME OVER", WIN_W // 2 - 130, WIN_H // 2 - 60, 48, (255, 80, 80))
@@ -393,6 +503,10 @@ def main():
 
     hands.close()
     cap.release()
+
+    if voice is not None:
+        voice.stop()
+        
     pygame.quit()
 
 if __name__ == "__main__":
