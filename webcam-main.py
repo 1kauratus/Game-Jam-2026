@@ -390,6 +390,19 @@ def main():
 
     print(f"[camera] using index={used_index} backend={args.backend}")
 
+    ## audio setup
+    pygame.mixer.init()  # initialize audio
+    death_sfx = pygame.mixer.Sound("assets/sfx/death.wav")
+    death_sfx.set_volume(0.8)  # 0.0 to 1.0
+
+    ## image setup
+    emoji_left  = pygame.transform.smoothscale(
+        pygame.image.load("assets/img/brokenheart.png").convert_alpha(), (160, 160)
+    )
+    emoji_right = pygame.transform.smoothscale(
+        pygame.image.load("assets/img/deadrose.png").convert_alpha(), (160, 160)
+    )
+
     hands = mp_hands.Hands(
         static_image_mode=False,
         max_num_hands=2,
@@ -733,6 +746,7 @@ def main():
                 if player.rect.colliderect(ob.rect):
                     if ob.kind == "PIPE" and player.state == "SLIDE":
                         continue
+                    death_sfx.play()
                     state = "GAMEOVER"
                     break
 
@@ -785,9 +799,13 @@ def main():
                               20, 158, 20, (200, 255, 200))
 
         elif state == "GAMEOVER":
-            draw_text(screen, "GAME OVER", WIN_W // 2 - 130, WIN_H // 2 - 60, 48, (255, 80, 80))
-            draw_text(screen, f"Survived: {score:0.2f}s", WIN_W // 2 - 145, WIN_H // 2, 30, (255, 255, 255))
-            draw_text(screen, "Press R to restart (recalibrates).", WIN_W // 2 - 220, WIN_H // 2 + 45, 24, (255, 255, 0))
+            panel = pygame.Rect(WIN_W // 2 - 260, WIN_H // 2 - 90, 520, 180)
+            pygame.draw.rect(screen, (0, 0, 0), panel)              # filled background
+            pygame.draw.rect(screen, (255, 255, 255), panel, 3)
+
+            draw_text(screen, "lock in twin", WIN_W // 2 - 130, WIN_H // 2 - 60, 48, (255, 80, 80))
+            draw_text(screen, f"Survived: {score:0.2f}s", WIN_W // 2 - 110, WIN_H // 2, 30, (255, 255, 255))
+            draw_text(screen, "Press R to restart (recalibrates).", WIN_W // 2 - 145, WIN_H // 2 + 45, 24, (255, 255, 0))
 
         pygame.display.flip()
 
