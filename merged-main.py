@@ -21,6 +21,7 @@
 import argparse
 import cv2
 import time
+import os
 import numpy as np
 import pygame
 import mediapipe as mp
@@ -427,6 +428,43 @@ def main():
         print("Sound FX disabled (mixer or file error):", e)
         death_sfx = None
 
+    # -----------------------------
+    # Lane-switch emoji images
+    # -----------------------------
+    ICON_SIZE = 80
+    LANE_FX_DURATION = 0.45  # seconds the icon stays visible after a lane change
+
+    def _load_icon(candidate_paths, fallback_label):
+        # Try loading an image file; if unavailable, fall back to a text badge.
+        for p in candidate_paths:
+            try:
+                if os.path.exists(p):
+                    img = pygame.image.load(p).convert_alpha()
+                    img = pygame.transform.smoothscale(img, (ICON_SIZE, ICON_SIZE))
+                    return img
+            except Exception:
+                pass
+
+        # Fallback: render a small text badge.
+        badge = pygame.Surface((ICON_SIZE, ICON_SIZE), pygame.SRCALPHA)
+        pygame.draw.circle(badge, (0, 0, 0, 160), (ICON_SIZE // 2, ICON_SIZE // 2), ICON_SIZE // 2)
+        pygame.draw.circle(badge, (255, 255, 255, 220), (ICON_SIZE // 2, ICON_SIZE // 2), ICON_SIZE // 2, 3)
+        f = pygame.font.SysFont("arial", 22, bold=True)
+        txt = f.render(fallback_label, True, (255, 255, 255))
+        badge.blit(txt, (ICON_SIZE // 2 - txt.get_width() // 2, ICON_SIZE // 2 - txt.get_height() // 2))
+        return badge
+
+    # You can rename/move these files; the loader tries multiple common locations.
+    deadrose_icon = _load_icon(
+        ["assets/img/deadrose.png", "assets/emojis/deadrose.png", "assets/deadrose.png"],
+        "ROSE",
+    )
+    brokenheart_icon = _load_icon(
+        ["assets/img/brokenheart.png", "assets/emojis/brokenheart.png", "assets/brokenheart.png"],
+        "HEART",
+    )
+
+
 
     hands = mp_hands.Hands(
         static_image_mode=False,
@@ -484,6 +522,10 @@ def main():
     # WALL immunity state (head up)
     wall_immune = False
 
+    # Lane-switch FX state
+    lane_fx_timer = 0.0
+    lane_fx_side = None  # 'left' or 'right'
+
     # Game state
     player = Player()
     obstacles = []
@@ -501,6 +543,13 @@ def main():
     while running:
         dt = clock.tick(FPS) / 1000.0
         now = time.time()
+
+
+        # Lane-switch FX countdown
+        if lane_fx_timer > 0.0:
+            lane_fx_timer = max(0.0, lane_fx_timer - dt)
+            if lane_fx_timer == 0.0:
+                lane_fx_side = None
 
         # Events
         for event in pygame.event.get():
@@ -654,14 +703,24 @@ def main():
                 score = 0.0
                 speed = SPEED_START
                 wall_immune = False
+                lane_fx_timer = 0.0
+                lane_fx_side = None
 
         # -------------- PLAYING --------------
         if state == "PLAYING":
             # Keyboard fallback
             if keys[pygame.K_LEFT]:
+                old_lane = player.lane
                 player.move_left()
+                if player.lane != old_lane:
+                    lane_fx_side = "left"
+                    lane_fx_timer = LANE_FX_DURATION
             if keys[pygame.K_RIGHT]:
+                old_lane = player.lane
                 player.move_right()
+                if player.lane != old_lane:
+                    lane_fx_side = "right"
+                    lane_fx_timer = LANE_FX_DURATION
             if keys[pygame.K_SPACE] and (now - last_jump_time) >= JUMP_COOLDOWN:
                 player.jump()
                 last_jump_time = now
@@ -717,11 +776,19 @@ def main():
             can_switch = (now - last_switch_time) >= COOLDOWN
             if can_switch and (not both_hands_up):
                 if smooth_left_lift >= LIFT_TRIGGER and left_armed:
+                    old_lane = player.lane
                     player.move_left()
+                    if player.lane != old_lane:
+                        lane_fx_side = "left"
+                        lane_fx_timer = LANE_FX_DURATION
                     left_armed = False
                     last_switch_time = now
                 elif smooth_right_lift >= LIFT_TRIGGER and right_armed:
+                    old_lane = player.lane
                     player.move_right()
+                    if player.lane != old_lane:
+                        lane_fx_side = "right"
+                        lane_fx_timer = LANE_FX_DURATION
                     right_armed = False
                     last_switch_time = now
 
@@ -814,6 +881,16 @@ def main():
         player.draw(screen, wall_immune if state == "PLAYING" else False)
         for ob in obstacles:
             ob.draw(screen)
+
+        # Lane-switch FX (show icon on the side you switched toward)
+        if lane_fx_timer > 0.0 and lane_fx_side:
+            icon = brokenheart_icon if lane_fx_side == "left" else deadrose_icon
+            alpha = int(255 * (lane_fx_timer / LANE_FX_DURATION)) if LANE_FX_DURATION > 0 else 255
+            surf = icon.copy()
+            surf.set_alpha(max(0, min(255, alpha)))
+            x = 24 if lane_fx_side == "left" else (WIN_W - surf.get_width() - 24)
+            y = int(WIN_H * 0.45) - surf.get_height() // 2
+            screen.blit(surf, (x, y))
 
         if cam_fail_count > 0:
             draw_text(screen, "CAMERA NOT READY (check webcam index / permissions)", 20, 18, 26, (255, 150, 0))
