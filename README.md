@@ -29,6 +29,6 @@ if (-not $ver.StartsWith("3.12.")) { throw "Expected Python 3.12.x, got $ver" }
 & $PY -m pip install "mediapipe==0.10.21" "pygame==2.6.1" opencv-python numpy sounddevice
 
 # Run with arguments (DirectShow backend, camera 0)
-& $PY ".\merged-main.py" --backend dshow --cam 0
+& $PY ".\merged-main-v3-mask.py" --backend dshow --cam 0
 
 ```
