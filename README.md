@@ -9,34 +9,26 @@ pip install "numpy<2" opencv-python mediapipe pygame sounddevice
 ---
 ## exact thing to run if you are using window:
 ```
-# ---- Game Jam 2026: quick run (Windows PowerShell) ----
+$ErrorActionPreference = "Stop"
 
-# Prefer Python 3.11 (best compatibility with mediapipe==0.10.21)
-$py = $null
-try { $py = (py -3.11 -c "import sys; print(sys.executable)" 2>$null).Trim() } catch {}
-if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }
+$VENV = ".venv312"
 
-if (-not $py) {
-  Write-Host "Python not found. Install Python 3.11 from python.org, then re-run this script."
-  exit 1
+# Create venv with Python 3.12 (requires Python 3.12 to be installed)
+if (!(Test-Path $VENV)) {
+  py -3.12 -m venv $VENV
 }
 
-# Create venv (idempotent)
-if (-not (Test-Path ".\.venv")) { & $py -m venv .venv }
+$PY = Join-Path $VENV "Scripts\python.exe"
 
-# Activate venv
-. .\.venv\Scripts\Activate.ps1
+# Verify Python version is 3.12.x
+$ver = & $PY -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+if (-not $ver.StartsWith("3.12.")) { throw "Expected Python 3.12.x, got $ver" }
 
-# Upgrade pip tooling
-python -m pip install --upgrade pip setuptools wheel
+# Install pinned deps
+& $PY -m pip install --upgrade pip
+& $PY -m pip install "mediapipe==0.10.21" "pygame==2.6.1" opencv-python numpy sounddevice
 
-# Install deps (pin mediapipe to required version)
-pip uninstall -y mediapipe *> $null
-pip install --no-cache-dir opencv-python numpy pygame sounddevice mediapipe==0.10.21
+# Run with arguments (DirectShow backend, camera 0)
+& $PY ".\merged-main.py" --backend dshow --cam 0
 
-# Quick sanity check
-python -c "import mediapipe as mp; assert mp.__version__=='0.10.21' and hasattr(mp,'solutions'); print('mediapipe OK:', mp.__version__)"
-
-# Run game (DirectShow backend for Windows)
-python .\webcam-main.py --backend dshow --cam 0
 ```
